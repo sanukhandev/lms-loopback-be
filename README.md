@@ -125,4 +125,4 @@ public/                    # Static assets for default landing
 
 ## License
 
-This project is currently private. Contact the maintainer for licensing details.
+Distributed under the terms of the GNU General Public License v3.0. See `LICENSE` for the full text.
