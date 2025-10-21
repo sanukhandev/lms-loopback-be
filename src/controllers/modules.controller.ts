@@ -1,10 +1,11 @@
 import {authenticate} from '@loopback/authentication';
 import {authorize} from '@loopback/authorization';
-import {inject} from '@loopback/core';
+import {inject, service} from '@loopback/core';
 import {Filter, repository} from '@loopback/repository';
 import {
   HttpErrors,
   Request,
+  Response,
   RestBindings,
   SchemaObject,
   del,
@@ -15,10 +16,13 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
+import {SecurityBindings, UserProfile, securityId} from '@loopback/security';
 import {Logger} from 'pino';
 import {LoggingBindings} from '../bindings/keys';
-import {Course, Module} from '../models';
+import {AttachmentMetadata, AttachmentMetadataSchema, Course, Module} from '../models';
 import {CourseRepository, ModuleRepository} from '../repositories';
+import {DropboxAttachmentService} from '../services/dropbox-attachment.service';
+import {DEFAULT_MAX_UPLOAD_SIZE, parseSingleFileUpload} from '../utils/multipart';
 import {extractTenantId, sanitizeTenantId} from '../utils/tenant';
 
 const MODULE_VIEW_SCHEMA: SchemaObject = {
@@ -31,6 +35,7 @@ const MODULE_VIEW_SCHEMA: SchemaObject = {
     courseId: {type: 'string'},
     createdAt: {type: 'string', format: 'date-time'},
     updatedAt: {type: 'string', format: 'date-time'},
+    attachments: {type: 'array', items: AttachmentMetadataSchema},
   },
 };
 
@@ -69,6 +74,7 @@ interface ModuleView {
   courseId: string;
   createdAt?: string;
   updatedAt?: string;
+  attachments?: AttachmentMetadata[];
 }
 
 @authenticate('jwt')
@@ -82,6 +88,10 @@ export class ModulesController {
     private readonly request: Request,
     @inject(LoggingBindings.LOGGER)
     private readonly logger: Logger,
+    @service(DropboxAttachmentService)
+    private readonly dropboxAttachmentService: DropboxAttachmentService,
+    @inject(SecurityBindings.USER, {optional: true})
+    private readonly currentUserProfile?: UserProfile,
   ) { }
 
   @authorize({allowedRoles: ['tenantAdmin', 'instructor']})
@@ -234,6 +244,62 @@ export class ModulesController {
   }
 
   @authorize({allowedRoles: ['tenantAdmin', 'instructor']})
+  @post('/tenant/courses/{courseId}/modules/{moduleId}/attachments')
+  @response(201, {
+    description: 'Upload an attachment for a module',
+    content: {'application/json': {schema: AttachmentMetadataSchema}},
+  })
+  async uploadModuleAttachment(
+    @param.path.string('courseId') courseId: string,
+    @param.path.string('moduleId') moduleId: string,
+    @requestBody.file({
+      required: true,
+      description: 'Multipart form with a single "file" field for the attachment',
+    })
+    request: Request,
+    @inject(RestBindings.Http.RESPONSE)
+    response: Response,
+  ): Promise<AttachmentMetadata> {
+    const tenantId = sanitizeTenantId(extractTenantId(this.request));
+    const module = await this.moduleRepository.findById(moduleId);
+    await this.ensureModuleAccess(module, courseId, tenantId);
+
+    const {file, fields} = await parseSingleFileUpload(request, response, {
+      maxFileSizeBytes: this.getAttachmentMaxSize(),
+    });
+
+    const displayName =
+      this.extractFieldValue(fields['displayName']) ??
+      this.extractFieldValue(fields['name']) ??
+      undefined;
+
+    const attachment = await this.dropboxAttachmentService.uploadModuleAttachment(
+      tenantId,
+      moduleId,
+      {
+        buffer: file.buffer,
+        fileName: file.originalname,
+        size: file.size,
+        contentType: file.mimetype,
+        displayName,
+      },
+      this.getActorId(),
+    );
+
+    this.logger.info(
+      this.buildLogContext(tenantId, {
+        courseId,
+        moduleId,
+        attachmentId: attachment.id,
+        dropboxPath: attachment.dropboxPath,
+      }),
+      'module attachment uploaded',
+    );
+
+    return attachment;
+  }
+
+  @authorize({allowedRoles: ['tenantAdmin', 'instructor']})
   @del('/tenant/courses/{courseId}/modules/{moduleId}')
   @response(204, {
     description: 'Delete a module',
@@ -289,6 +355,7 @@ export class ModulesController {
       courseId: this.normalizeId(module.courseId),
       createdAt: module.createdAt,
       updatedAt: module.updatedAt,
+      attachments: module.attachments,
     };
   }
 
@@ -329,5 +396,33 @@ export class ModulesController {
     }
 
     return String(id ?? '');
+  }
+
+  private extractFieldValue(value: unknown): string | undefined {
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      const first = value[0];
+      return typeof first === 'string' ? first : undefined;
+    }
+    return undefined;
+  }
+
+  private getAttachmentMaxSize(): number {
+    const raw = process.env.ATTACHMENT_MAX_BYTES;
+    const parsed = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return DEFAULT_MAX_UPLOAD_SIZE;
+    }
+    return parsed;
+  }
+
+  private getActorId(): string | undefined {
+    const profile = this.currentUserProfile;
+    if (!profile) {
+      return undefined;
+    }
+    return profile[securityId];
   }
 }

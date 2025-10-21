@@ -1,10 +1,11 @@
 import {authenticate} from '@loopback/authentication';
 import {authorize} from '@loopback/authorization';
-import {inject} from '@loopback/core';
+import {inject, service} from '@loopback/core';
 import {Filter, repository} from '@loopback/repository';
 import {
   HttpErrors,
   Request,
+  Response,
   RestBindings,
   SchemaObject,
   del,
@@ -15,10 +16,13 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
+import {SecurityBindings, UserProfile, securityId} from '@loopback/security';
 import {Logger} from 'pino';
 import {LoggingBindings} from '../bindings/keys';
-import {Chapter, Module} from '../models';
+import {AttachmentMetadata, AttachmentMetadataSchema, Chapter, Module} from '../models';
 import {ChapterRepository, CourseRepository, ModuleRepository} from '../repositories';
+import {DropboxAttachmentService} from '../services/dropbox-attachment.service';
+import {DEFAULT_MAX_UPLOAD_SIZE, parseSingleFileUpload} from '../utils/multipart';
 import {extractTenantId, sanitizeTenantId} from '../utils/tenant';
 
 const CHAPTER_VIEW_SCHEMA: SchemaObject = {
@@ -33,6 +37,7 @@ const CHAPTER_VIEW_SCHEMA: SchemaObject = {
     moduleId: {type: 'string'},
     createdAt: {type: 'string', format: 'date-time'},
     updatedAt: {type: 'string', format: 'date-time'},
+    attachments: {type: 'array', items: AttachmentMetadataSchema},
   },
 };
 
@@ -86,6 +91,7 @@ interface ChapterView {
   moduleId: string;
   createdAt?: string;
   updatedAt?: string;
+  attachments?: AttachmentMetadata[];
 }
 
 @authenticate('jwt')
@@ -101,6 +107,10 @@ export class ChaptersController {
     private readonly request: Request,
     @inject(LoggingBindings.LOGGER)
     private readonly logger: Logger,
+    @service(DropboxAttachmentService)
+    private readonly dropboxAttachmentService: DropboxAttachmentService,
+    @inject(SecurityBindings.USER, {optional: true})
+    private readonly currentUserProfile?: UserProfile,
   ) { }
 
   @authorize({allowedRoles: ['tenantAdmin', 'instructor']})
@@ -261,6 +271,63 @@ export class ChaptersController {
   }
 
   @authorize({allowedRoles: ['tenantAdmin', 'instructor']})
+  @post('/tenant/modules/{moduleId}/chapters/{chapterId}/attachments')
+  @response(201, {
+    description: 'Upload an attachment for a chapter',
+    content: {'application/json': {schema: AttachmentMetadataSchema}},
+  })
+  async uploadChapterAttachment(
+    @param.path.string('moduleId') moduleId: string,
+    @param.path.string('chapterId') chapterId: string,
+    @requestBody.file({
+      required: true,
+      description: 'Multipart form with a single "file" field for the attachment',
+    })
+    request: Request,
+    @inject(RestBindings.Http.RESPONSE)
+    response: Response,
+  ): Promise<AttachmentMetadata> {
+    const tenantId = sanitizeTenantId(extractTenantId(this.request));
+    const chapter = await this.chapterRepository.findById(chapterId);
+    await this.ensureChapterAccess(chapter, moduleId, tenantId);
+
+    const {file, fields} = await parseSingleFileUpload(request, response, {
+      maxFileSizeBytes: this.getAttachmentMaxSize(),
+    });
+
+    const displayName =
+      this.extractFieldValue(fields['displayName']) ??
+      this.extractFieldValue(fields['name']) ??
+      undefined;
+
+    const attachment = await this.dropboxAttachmentService.uploadChapterAttachment(
+      tenantId,
+      moduleId,
+      chapterId,
+      {
+        buffer: file.buffer,
+        fileName: file.originalname,
+        size: file.size,
+        contentType: file.mimetype,
+        displayName,
+      },
+      this.getActorId(),
+    );
+
+    this.logger.info(
+      this.buildLogContext(tenantId, {
+        moduleId,
+        chapterId,
+        attachmentId: attachment.id,
+        dropboxPath: attachment.dropboxPath,
+      }),
+      'chapter attachment uploaded',
+    );
+
+    return attachment;
+  }
+
+  @authorize({allowedRoles: ['tenantAdmin', 'instructor']})
   @del('/tenant/modules/{moduleId}/chapters/{chapterId}')
   @response(204, {
     description: 'Delete a chapter',
@@ -324,6 +391,7 @@ export class ChaptersController {
       moduleId: this.normalizeId(chapter.moduleId),
       createdAt: chapter.createdAt,
       updatedAt: chapter.updatedAt,
+      attachments: chapter.attachments,
     };
   }
 
@@ -364,5 +432,33 @@ export class ChaptersController {
     }
 
     return String(id ?? '');
+  }
+
+  private extractFieldValue(value: unknown): string | undefined {
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      const first = value[0];
+      return typeof first === 'string' ? first : undefined;
+    }
+    return undefined;
+  }
+
+  private getAttachmentMaxSize(): number {
+    const raw = process.env.ATTACHMENT_MAX_BYTES;
+    const parsed = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return DEFAULT_MAX_UPLOAD_SIZE;
+    }
+    return parsed;
+  }
+
+  private getActorId(): string | undefined {
+    const profile = this.currentUserProfile;
+    if (!profile) {
+      return undefined;
+    }
+    return profile[securityId];
   }
 }

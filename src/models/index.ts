@@ -1,4 +1,5 @@
 export * from './assignment.model';
+export * from './attachment.model';
 export * from './certificate.model';
 export * from './chapter.model';
 export * from './cms-content-revision.model';

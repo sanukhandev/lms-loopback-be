@@ -1,4 +1,5 @@
 import {belongsTo, Entity, hasMany, model, property} from '@loopback/repository';
+import {AttachmentMetadata, AttachmentMetadataSchema} from './attachment.model';
 import {Chapter} from './chapter.model';
 import {Course} from './course.model';
 
@@ -25,6 +26,16 @@ export class Module extends Entity {
 
   @hasMany(() => Chapter)
   chapters?: Chapter[];
+
+  @property({
+    type: 'array',
+    itemType: 'object',
+    jsonSchema: {
+      type: 'array',
+      items: AttachmentMetadataSchema as object,
+    },
+  })
+  attachments?: AttachmentMetadata[];
 
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: string;

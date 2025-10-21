@@ -1,10 +1,11 @@
 import {authenticate} from '@loopback/authentication';
 import {authorize} from '@loopback/authorization';
-import {inject} from '@loopback/core';
+import {inject, service} from '@loopback/core';
 import {Filter, repository} from '@loopback/repository';
 import {
   HttpErrors,
   Request,
+  Response,
   RestBindings,
   SchemaObject,
   get,
@@ -14,10 +15,13 @@ import {
   requestBody,
   response,
 } from '@loopback/rest';
+import {SecurityBindings, UserProfile, securityId} from '@loopback/security';
 import {Logger} from 'pino';
 import {CommissionCalculator, LoggingBindings, PaymentBindings} from '../bindings/keys';
-import {Course} from '../models';
+import {AttachmentMetadata, AttachmentMetadataSchema, Course} from '../models';
 import {CourseRepository, UserRepository} from '../repositories';
+import {DropboxAttachmentService} from '../services/dropbox-attachment.service';
+import {DEFAULT_MAX_UPLOAD_SIZE, parseSingleFileUpload} from '../utils/multipart';
 import {extractTenantId, sanitizeTenantId} from '../utils/tenant';
 
 const COURSE_VIEW_SCHEMA: SchemaObject = {
@@ -38,6 +42,7 @@ const COURSE_VIEW_SCHEMA: SchemaObject = {
     instructorId: {type: 'string'},
     createdAt: {type: 'string', format: 'date-time'},
     updatedAt: {type: 'string', format: 'date-time'},
+    attachments: {type: 'array', items: AttachmentMetadataSchema},
   },
 };
 
@@ -114,6 +119,7 @@ interface CourseView {
   instructorId?: string;
   createdAt?: string;
   updatedAt?: string;
+  attachments?: AttachmentMetadata[];
 }
 
 @authenticate('jwt')
@@ -129,6 +135,10 @@ export class CoursesController {
     private readonly logger: Logger,
     @inject(PaymentBindings.COMMISSION_SERVICE)
     private readonly commissionCalculator: CommissionCalculator,
+    @service(DropboxAttachmentService)
+    private readonly dropboxAttachmentService: DropboxAttachmentService,
+    @inject(SecurityBindings.USER, {optional: true})
+    private readonly currentUserProfile?: UserProfile,
   ) { }
 
   @authorize({allowedRoles: ['tenantAdmin']})
@@ -182,6 +192,57 @@ export class CoursesController {
     );
 
     return this.toView(course);
+  }
+
+  @authorize({allowedRoles: ['tenantAdmin']})
+  @post('/tenant/courses/{courseId}/attachments')
+  @response(201, {
+    description: 'Upload an attachment for a course',
+    content: {'application/json': {schema: AttachmentMetadataSchema}},
+  })
+  async uploadCourseAttachment(
+    @param.path.string('courseId') courseId: string,
+    @requestBody.file({
+      required: true,
+      description: 'Multipart form containing a single "file" field for the attachment',
+    })
+    request: Request,
+    @inject(RestBindings.Http.RESPONSE)
+    response: Response,
+  ): Promise<AttachmentMetadata> {
+    const tenantId = sanitizeTenantId(extractTenantId(this.request));
+    const {file, fields} = await parseSingleFileUpload(request, response, {
+      maxFileSizeBytes: this.getAttachmentMaxSize(),
+    });
+
+    const displayName =
+      this.extractFieldValue(fields['displayName']) ??
+      this.extractFieldValue(fields['name']) ??
+      undefined;
+
+    const attachment = await this.dropboxAttachmentService.uploadCourseAttachment(
+      tenantId,
+      courseId,
+      {
+        buffer: file.buffer,
+        fileName: file.originalname,
+        size: file.size,
+        contentType: file.mimetype,
+        displayName,
+      },
+      this.getActorId(),
+    );
+
+    this.logger.info(
+      this.buildLogContext(tenantId, {
+        courseId,
+        attachmentId: attachment.id,
+        dropboxPath: attachment.dropboxPath,
+      }),
+      'course attachment uploaded',
+    );
+
+    return attachment;
   }
 
   @authorize({allowedRoles: ['tenantAdmin']})
@@ -441,6 +502,7 @@ export class CoursesController {
       instructorId: course.instructorId,
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
+      attachments: course.attachments,
     };
   }
 
@@ -469,5 +531,33 @@ export class CoursesController {
     }
 
     return requestId ?? correlationId;
+  }
+
+  private extractFieldValue(value: unknown): string | undefined {
+    if (typeof value === 'string') {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      const first = value[0];
+      return typeof first === 'string' ? first : undefined;
+    }
+    return undefined;
+  }
+
+  private getAttachmentMaxSize(): number {
+    const raw = process.env.ATTACHMENT_MAX_BYTES;
+    const parsed = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return DEFAULT_MAX_UPLOAD_SIZE;
+    }
+    return parsed;
+  }
+
+  private getActorId(): string | undefined {
+    const profile = this.currentUserProfile;
+    if (!profile) {
+      return undefined;
+    }
+    return profile[securityId];
   }
 }

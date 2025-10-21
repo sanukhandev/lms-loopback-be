@@ -1,4 +1,5 @@
 import {belongsTo, Entity, model, property} from '@loopback/repository';
+import {AttachmentMetadata, AttachmentMetadataSchema} from './attachment.model';
 import {Module} from './module.model';
 
 @model({settings: {mongodb: {collection: 'chapters'}}})
@@ -27,6 +28,16 @@ export class Chapter extends Entity {
 
   @belongsTo(() => Module)
   moduleId: string;
+
+  @property({
+    type: 'array',
+    itemType: 'object',
+    jsonSchema: {
+      type: 'array',
+      items: AttachmentMetadataSchema as object,
+    },
+  })
+  attachments?: AttachmentMetadata[];
 
   @property({type: 'date', defaultFn: 'now'})
   createdAt?: string;

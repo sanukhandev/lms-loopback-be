@@ -1,5 +1,6 @@
 import {belongsTo, Entity, hasMany, model, property} from '@loopback/repository';
 import {Assignment} from './assignment.model';
+import {AttachmentMetadata, AttachmentMetadataSchema} from './attachment.model';
 import {Certificate} from './certificate.model';
 import {Enrollment} from './enrollment.model';
 import {Module} from './module.model';
@@ -58,6 +59,16 @@ export class Course extends Entity {
 
   @hasMany(() => Enrollment)
   enrollments?: Enrollment[];
+
+  @property({
+    type: 'array',
+    itemType: 'object',
+    jsonSchema: {
+      type: 'array',
+      items: AttachmentMetadataSchema as object,
+    },
+  })
+  attachments?: AttachmentMetadata[];
 
   @hasMany(() => Module)
   modules?: Module[];

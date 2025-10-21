@@ -24,6 +24,7 @@ import {TenantDataSourceObserver} from './observers/tenant-datasource.observer';
 import {LogErrorProvider} from './providers/log-error.provider';
 import {MySequence} from './sequence';
 import {CmsContentService} from './services/cms-content.service';
+import {DropboxAttachmentService} from './services/dropbox-attachment.service';
 import {LoggerProvider} from './services/logger.provider';
 import {SessionAttendanceService} from './services/session-attendance.service';
 import {SessionReminderService} from './services/session-reminder.service';
@@ -112,6 +113,7 @@ export class LmsBeApplication extends BootMixin(
     this.service(SessionReminderService);
     this.service(CmsContentService);
     this.service(UserSettingsService);
+    this.service(DropboxAttachmentService);
 
     // Customize @loopback/boot Booter Conventions here
     this.bootOptions = {
