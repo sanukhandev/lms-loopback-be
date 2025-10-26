@@ -210,7 +210,8 @@ export class CoursesController {
     @inject(RestBindings.Http.RESPONSE)
     response: Response,
   ): Promise<AttachmentMetadata> {
-    const tenantId = sanitizeTenantId(extractTenantId(this.request));
+    const rawTenantId = extractTenantId(this.request);
+    const tenantId = sanitizeTenantId(rawTenantId);
     const {file, fields} = await parseSingleFileUpload(request, response, {
       maxFileSizeBytes: this.getAttachmentMaxSize(),
     });
@@ -221,7 +222,7 @@ export class CoursesController {
       undefined;
 
     const attachment = await this.dropboxAttachmentService.uploadCourseAttachment(
-      tenantId,
+      rawTenantId,
       courseId,
       {
         buffer: file.buffer,

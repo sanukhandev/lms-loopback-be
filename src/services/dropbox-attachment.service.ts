@@ -276,11 +276,26 @@ export class DropboxAttachmentService {
   }
 
   private async loadTenantRecord(tenantId: string): Promise<Tenant> {
-    const candidates = [tenantId];
+    const variantSet = new Set<string>();
+    variantSet.add(tenantId);
+
     const sanitized = sanitizeTenantId(tenantId);
-    if (!candidates.includes(sanitized)) {
-      candidates.push(sanitized);
-    }
+    variantSet.add(sanitized);
+
+    variantSet.add(tenantId.replace(/_/g, '-'));
+    variantSet.add(tenantId.replace(/-/g, '_'));
+    variantSet.add(sanitized.replace(/_/g, '-'));
+    variantSet.add(sanitized.replace(/-/g, '_'));
+    variantSet.add(tenantId.replace(/[-_.]/g, ''));
+    variantSet.add(sanitized.replace(/[_]/g, '').replace(/\./g, ''));
+
+    const candidates = Array.from(variantSet).filter(Boolean);
+    const normalizedCandidates = new Set(
+      candidates.map(value => sanitizeTenantId(value)),
+    );
+    const collapsedCandidates = new Set(
+      Array.from(normalizedCandidates).map(value => value.replace(/[-_.]/g, '')),
+    );
 
     for (const candidate of candidates) {
       try {
@@ -292,10 +307,58 @@ export class DropboxAttachmentService {
       }
     }
 
-    for (const slug of candidates) {
-      const tenant = await this.tenantRepository.findOne({where: {slug}});
+    for (const slugCandidate of candidates) {
+      const tenant = await this.tenantRepository.findOne({where: {slug: slugCandidate}});
       if (tenant) {
         return tenant;
+      }
+    }
+
+    const fallbackTenants = await this.tenantRepository.find({limit: 250});
+    for (const tenant of fallbackTenants) {
+      const tenantSlug = tenant.slug ? sanitizeTenantId(tenant.slug) : undefined;
+      if (tenantSlug && (normalizedCandidates.has(tenantSlug) || collapsedCandidates.has(tenantSlug.replace(/[-_.]/g, '')))) {
+        return tenant;
+      }
+
+      if (tenant.domain) {
+        const normalizedDomain = sanitizeTenantId(tenant.domain);
+        if (
+          normalizedCandidates.has(normalizedDomain) ||
+          collapsedCandidates.has(normalizedDomain.replace(/[-_.]/g, '')) ||
+          (() => {
+            const firstLabel = tenant.domain.split('.')[0];
+            if (!firstLabel) {
+              return false;
+            }
+            const normalizedFirstLabel = sanitizeTenantId(firstLabel);
+            return (
+              normalizedCandidates.has(normalizedFirstLabel) ||
+              collapsedCandidates.has(normalizedFirstLabel.replace(/[-_.]/g, ''))
+            );
+          })()
+        ) {
+          return tenant;
+        }
+      }
+
+      if (tenant.hostnames && tenant.hostnames.length > 0) {
+        for (const host of tenant.hostnames) {
+          const normalizedHost = sanitizeTenantId(host);
+          const collapsedHost = normalizedHost.replace(/[-_.]/g, '');
+          const firstLabel = host.split('.')[0];
+          const normalizedFirstLabel = firstLabel ? sanitizeTenantId(firstLabel) : undefined;
+
+          if (
+            normalizedCandidates.has(normalizedHost) ||
+            collapsedCandidates.has(collapsedHost) ||
+            (normalizedFirstLabel &&
+              (normalizedCandidates.has(normalizedFirstLabel) ||
+                collapsedCandidates.has(normalizedFirstLabel.replace(/[-_.]/g, ''))))
+          ) {
+            return tenant;
+          }
+        }
       }
     }
 

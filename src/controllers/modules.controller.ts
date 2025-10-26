@@ -260,7 +260,8 @@ export class ModulesController {
     @inject(RestBindings.Http.RESPONSE)
     response: Response,
   ): Promise<AttachmentMetadata> {
-    const tenantId = sanitizeTenantId(extractTenantId(this.request));
+    const rawTenantId = extractTenantId(this.request);
+    const tenantId = sanitizeTenantId(rawTenantId);
     const module = await this.moduleRepository.findById(moduleId);
     await this.ensureModuleAccess(module, courseId, tenantId);
 
@@ -274,7 +275,7 @@ export class ModulesController {
       undefined;
 
     const attachment = await this.dropboxAttachmentService.uploadModuleAttachment(
-      tenantId,
+      rawTenantId,
       moduleId,
       {
         buffer: file.buffer,

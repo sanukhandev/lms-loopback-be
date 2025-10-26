@@ -287,7 +287,8 @@ export class ChaptersController {
     @inject(RestBindings.Http.RESPONSE)
     response: Response,
   ): Promise<AttachmentMetadata> {
-    const tenantId = sanitizeTenantId(extractTenantId(this.request));
+    const rawTenantId = extractTenantId(this.request);
+    const tenantId = sanitizeTenantId(rawTenantId);
     const chapter = await this.chapterRepository.findById(chapterId);
     await this.ensureChapterAccess(chapter, moduleId, tenantId);
 
@@ -301,7 +302,7 @@ export class ChaptersController {
       undefined;
 
     const attachment = await this.dropboxAttachmentService.uploadChapterAttachment(
-      tenantId,
+      rawTenantId,
       moduleId,
       chapterId,
       {
